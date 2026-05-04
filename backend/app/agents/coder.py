@@ -1,7 +1,6 @@
 import json
 import re
 from langchain_openai import ChatOpenAI
-
 from langchain_core.messages import SystemMessage, HumanMessage
 from app.schemas.models import ArchitectOutput, CoderOutput
 from app.prompts.templates import CODER_SYSTEM_PROMPT

@@ -1,0 +1,9 @@
+cffi==1.15.1
+GDAL==3.6.4
+mysql-connector-python==9.1.0
+numpy==1.24.3
+protobuf==4.21.12
+pycparser==2.21
+PyYAML==6.0
+six==1.16.0
+typing_extensions @ file:///private/tmp/python-typing-extensions-20230524-7242-qy7b9m/typing_extensions-4.6.1/dist/typing_extensions-4.6.1-py3-none-any.whl
