@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 
-const WS_URL = "ws://localhost:8000/ws/generate";
+const WS_URL = "wss://ai-coading-assistant.onrender.com/ws/generate";
 
 export function useWebSocket() {
   const [agentStatuses, setAgentStatuses] = useState({
@@ -33,7 +33,6 @@ export function useWebSocket() {
     setIsGenerating(true);
     startTime.current = Date.now();
 
-    // Close any existing connection
     if (wsRef.current) wsRef.current.close();
 
     const ws = new WebSocket(WS_URL);
