@@ -7,4 +7,7 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.11.0cd ~/Desktop/ai-coding-assistant
+git add backend/requirements.txt backend/runtime.txt
+git commit -m "use runtime.txt to pin python 3.11"
+git push
