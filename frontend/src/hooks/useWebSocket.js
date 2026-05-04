@@ -39,7 +39,7 @@ export function useWebSocket() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ prompt, settings }));
+      ws.send(JSON.stringify({ prompt, settings, session_id: sessionId }));
     };
 
     ws.onmessage = (event) => {

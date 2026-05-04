@@ -5,6 +5,7 @@ import OutputPanel   from "./components/OutputPanel";
 import ChatPanel     from "./components/ChatPanel";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { exportSession  } from "./utils/download";
+
 export default function App() {
   const {
     generate,
@@ -19,13 +20,20 @@ export default function App() {
   } = useWebSocket();
 
   const [liveCoderOutput, setLiveCoderOutput] = useState(null);
+  const [lastPrompt, setLastPrompt] = useState(null); // ← NEW
 
-  // Use chat-refined output if available, otherwise use pipeline output
   const displayOutput = liveCoderOutput || coderOutput;
+
+  // ← CHANGED: capture prompt before forwarding to generate
+  function handleGenerate(prompt, settings) {
+    setLastPrompt(prompt);
+    setLiveCoderOutput(null); // reset chat refinement on new generation
+    generate(prompt, settings);
+  }
 
   function handleExport() {
     exportSession(sessionId, {
-      originalPrompt:  null,
+      originalPrompt:  lastPrompt, // ← was null, now populated
       plannerOutput,
       architectOutput,
       coderOutput:     displayOutput,
@@ -46,7 +54,7 @@ export default function App() {
 
       {/* Left: Input */}
       <InputPanel
-        onGenerate={generate}
+        onGenerate={handleGenerate} // ← was `generate`, now wrapped
         isGenerating={isGenerating}
         agentStatuses={agentStatuses}
       />
@@ -63,10 +71,10 @@ export default function App() {
 
       {/* Right: split into Output + Chat */}
       <div style={{
-        display:             "grid",
-        gridTemplateRows:    "1fr 280px",
-        borderLeft:          "1px solid #2d3148",
-        overflow:            "hidden",
+        display:          "grid",
+        gridTemplateRows: "1fr 280px",
+        borderLeft:       "1px solid #2d3148",
+        overflow:         "hidden",
       }}>
         <OutputPanel
           coderOutput={displayOutput}

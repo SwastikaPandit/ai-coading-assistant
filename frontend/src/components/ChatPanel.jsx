@@ -1,7 +1,7 @@
 import { useState } from "react";
 import axios from "axios";
 
-const API_URL = "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "https://ai-coading-assistant.onrender.com";
 
 export default function ChatPanel({ sessionId, coderOutput, onCodeUpdate, exportSession }) {
   const [messages,  setMessages]  = useState([]);
