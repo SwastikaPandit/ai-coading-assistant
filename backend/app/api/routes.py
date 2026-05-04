@@ -1,7 +1,7 @@
 import json
 import uuid
 import os
-import pickle
+import redis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from app.schemas.models import GenerateRequest, ChatRequest, AgentStatus
@@ -12,34 +12,40 @@ from app.agents.coder import run_coder
 
 router = APIRouter()
 
-sessions: dict = {}
-SESSIONS_FILE = "/tmp/ai_assistant_sessions.pkl"
+# ── Redis session store ───────────────────────────────────
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+SESSION_TTL = 60 * 60 * 24  # 24 hours
 
 
-def save_sessions():
+def save_session(session_id: str, data: dict):
     try:
-        with open(SESSIONS_FILE, "wb") as f:
-            pickle.dump(sessions, f)
+        redis_client.setex(session_id, SESSION_TTL, json.dumps(data))
     except Exception as e:
-        print(f"Could not save sessions: {e}")
+        print(f"Redis save error: {e}")
 
 
-def load_sessions():
-    global sessions
+def load_session(session_id: str) -> dict | None:
     try:
-        if os.path.exists(SESSIONS_FILE):
-            with open(SESSIONS_FILE, "rb") as f:
-                sessions = pickle.load(f)
-            print(f"Restored {len(sessions)} sessions from disk")
+        raw = redis_client.get(session_id)
+        return json.loads(raw) if raw else None
     except Exception as e:
-        print(f"Could not load sessions: {e}")
+        print(f"Redis load error: {e}")
+        return None
 
 
-# Load on startup
-load_sessions()
+def serialize_session(planner_output, architect_output, coder_output, prompt, settings, chat_history):
+    return {
+        "planner_output":   planner_output.model_dump()   if planner_output   else None,
+        "architect_output": architect_output.model_dump() if architect_output else None,
+        "coder_output":     coder_output.model_dump()     if coder_output     else None,
+        "original_prompt":  prompt,
+        "settings":         settings,
+        "chat_history":     chat_history,
+    }
 
 
-# ── REST endpoint (simple, for testing) ─────────────────
+# ── REST endpoint ─────────────────────────────────────────
 @router.post("/generate")
 async def generate(request: GenerateRequest):
     session_id = request.session_id or str(uuid.uuid4())
@@ -49,18 +55,16 @@ async def generate(request: GenerateRequest):
             settings    = request.settings or {},
             session_id  = session_id,
         )
-        sessions[session_id] = {
-            "pipeline":        result,
-            "chat_history":    [],
+        save_session(session_id, {
             "original_prompt": request.prompt,
-        }
-        save_sessions()
+            "chat_history":    [],
+        })
         return {"session_id": session_id, "result": result.model_dump()}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ── WebSocket endpoint (real-time streaming) ─────────────
+# ── WebSocket endpoint ────────────────────────────────────
 @router.websocket("/ws/generate")
 async def ws_generate(websocket: WebSocket):
     await websocket.accept()
@@ -126,16 +130,11 @@ async def ws_generate(websocket: WebSocket):
             })
             return
 
-        # ── Save session & send done ──────────────────────
-        sessions[session_id] = {
-            "planner_output":   planner_output,
-            "architect_output": architect_output,
-            "coder_output":     coder_output,
-            "chat_history":     [],
-            "original_prompt":  prompt,
-            "settings":         settings,
-        }
-        save_sessions()  # ← persists to disk
+        # ── Save to Redis & send done ─────────────────────
+        save_session(session_id, serialize_session(
+            planner_output, architect_output, coder_output,
+            prompt, settings, []
+        ))
         await websocket.send_json({"type": "done", "session_id": session_id})
 
     except WebSocketDisconnect:
@@ -144,23 +143,24 @@ async def ws_generate(websocket: WebSocket):
         await websocket.send_json({"type": "error", "message": str(e)})
 
 
-# ── Chat refinement endpoint ──────────────────────────────
+# ── Chat refinement ───────────────────────────────────────
 @router.post("/chat")
 async def chat(request: ChatRequest):
-    session = sessions.get(request.session_id)
+    session = load_session(request.session_id)
     if not session:
-        print(f"Session {request.session_id} not found. Active sessions: {list(sessions.keys())}")
-        return JSONResponse(status_code=404, content={"error": f"Session not found. Active sessions: {list(sessions.keys())}"})
+        print(f"Session {request.session_id} not found in Redis")
+        return JSONResponse(status_code=404, content={"error": "Session not found. Please regenerate first."})
 
-    session["chat_history"].append({
-        "role": "user", "message": request.message
-    })
+    chat_history = session.get("chat_history", [])
+    chat_history.append({"role": "user", "message": request.message})
 
     try:
-        architect_output = session.get("architect_output")
-        if not architect_output:
+        from app.schemas.models import ArchitectOutput
+        architect_data = session.get("architect_output")
+        if not architect_data:
             return JSONResponse(status_code=400, content={"error": "No architect output in session"})
 
+        architect_output = ArchitectOutput(**architect_data)
         settings = session.get("settings", {})
         settings["extra_instruction"] = request.message
 
@@ -168,15 +168,21 @@ async def chat(request: ChatRequest):
             architect_output = architect_output,
             settings         = settings,
         )
-        session["coder_output"] = new_coder_output
-        session["chat_history"].append({
+
+        chat_history.append({
             "role": "assistant", "message": "Code updated based on your request."
         })
-        save_sessions()  # ← persists chat updates too
+
+        # Update session in Redis
+        session["coder_output"]  = new_coder_output.model_dump()
+        session["chat_history"]  = chat_history
+        session["settings"]      = settings
+        save_session(request.session_id, session)
+
         return {
             "session_id":   request.session_id,
             "coder_output": new_coder_output.model_dump(),
-            "chat_history": session["chat_history"],
+            "chat_history": chat_history,
         }
     except Exception as e:
         print(f"Chat error: {e}")
@@ -186,14 +192,14 @@ async def chat(request: ChatRequest):
 # ── Export session ────────────────────────────────────────
 @router.get("/export/{session_id}")
 async def export_session(session_id: str):
-    session = sessions.get(session_id)
+    session = load_session(session_id)
     if not session:
         return JSONResponse(status_code=404, content={"error": "Session not found"})
     return {
         "session_id":       session_id,
         "original_prompt":  session.get("original_prompt"),
-        "planner_output":   session["planner_output"].model_dump()   if session.get("planner_output")   else None,
-        "architect_output": session["architect_output"].model_dump() if session.get("architect_output") else None,
-        "coder_output":     session["coder_output"].model_dump()     if session.get("coder_output")     else None,
+        "planner_output":   session.get("planner_output"),
+        "architect_output": session.get("architect_output"),
+        "coder_output":     session.get("coder_output"),
         "chat_history":     session.get("chat_history", []),
     }
